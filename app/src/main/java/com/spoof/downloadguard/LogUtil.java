@@ -1,40 +1,58 @@
 package com.spoof.downloadguard;
 
 import java.io.BufferedReader;
-import java.io.InputStreamReader;
+import java.io.BufferedWriter;
+import java.io.File;
+import java.io.FileReader;
+import java.io.FileWriter;
+import java.text.SimpleDateFormat;
+import java.util.ArrayList;
+import java.util.Date;
+import java.util.List;
+import java.util.Locale;
 
 import de.robv.android.xposed.XposedBridge;
 
-/** 日志工具：hook 进程用 XposedBridge.log 输出，App 内通过 logcat 读取 */
+/** 日志工具：hook 与目标 App 共用 /data/local/tmp 下的日志文件 */
 public class LogUtil {
+    private static final File LOG_DIR = new File("/data/local/tmp/DownloadGuard");
+    private static final File LOG_FILE = new File(LOG_DIR, "log.txt");
+
     public static void log(String msg) {
+        String line = "[" + new SimpleDateFormat("MM-dd HH:mm:ss", Locale.getDefault())
+                .format(new Date()) + "] " + msg;
         XposedBridge.log("[DownloadGuard] " + msg);
+        try {
+            if (!LOG_DIR.exists()) LOG_DIR.mkdirs();
+            BufferedWriter w = new BufferedWriter(new FileWriter(LOG_FILE, true));
+            w.write(line);
+            w.newLine();
+            w.close();
+            // 确保其他进程（模块 App）能读
+            chmod(LOG_DIR, 777);
+            chmod(LOG_FILE, 666);
+        } catch (Throwable ignored) { }
     }
 
-    /** 从 logcat 读取本模块的所有日志（App 自身有读 logcat 权限） */
-    public static java.util.List<String> readLogs() {
-        java.util.List<String> result = new java.util.ArrayList<>();
-        try {
-            Process p = Runtime.getRuntime().exec(
-                    new String[]{"logcat", "-d", "-t", "500", "-s", "LSPosedFramework:I"});
-            BufferedReader r = new BufferedReader(new InputStreamReader(p.getInputStream()));
-            String line;
-            while ((line = r.readLine()) != null) {
-                if (line.contains("[DownloadGuard]")) {
-                    // 只保留 [DownloadGuard] 之后的部分
-                    int i = line.indexOf("[DownloadGuard]");
-                    result.add(line.substring(i));
-                }
-            }
-            r.close();
-            p.destroy();
+    public static List<String> readLogs() {
+        List<String> out = new ArrayList<>();
+        try (BufferedReader r = new BufferedReader(new FileReader(LOG_FILE))) {
+            String s;
+            while ((s = r.readLine()) != null) out.add(s);
         } catch (Throwable ignored) { }
-        return result;
+        return out;
     }
 
     public static void clearLogs() {
         try {
-            Runtime.getRuntime().exec(new String[]{"logcat", "-c"}).waitFor();
+            new FileWriter(LOG_FILE, false).close();
+        } catch (Throwable ignored) { }
+    }
+
+    private static void chmod(File f, int mode) {
+        try {
+            Runtime.getRuntime().exec(new String[]{"chmod", String.valueOf(mode),
+                    f.getAbsolutePath()}).waitFor();
         } catch (Throwable ignored) { }
     }
 }
