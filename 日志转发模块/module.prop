@@ -1,0 +1,6 @@
+id=downloadguard_logger
+name=DownloadGuard 日志转发
+version=1.0
+versionCode=1
+author=Claude
+description=把 LSPosed 中的 DownloadGuard 拦截日志导出到 /data/local/tmp/DownloadGuard/log.txt 供App内显示

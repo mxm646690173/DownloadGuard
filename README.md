@@ -32,3 +32,22 @@ adb logcat -s Xposed "*:E" | grep DownloadGuard
 - Kotlin 协程 Flow 里直接读 `InputStream` 写入内存再解密的场景，写盘时才触发第 4 层拦截
 - 后缀判断基于 URL/路径/响应头；完全无特征且写内存不落盘的"下载"无法定义，也不该拦
 - 不需要 Xposed Legacy 框架，需要 LSPosed（Zygisk 版）
+
+---
+
+## 应用内日志显示（需要配套 Magisk 模块）
+
+拦截发生在 WebView 沙箱进程中，它无法直接写共享日志文件；普通 App 也无法读取
+LSPosed 的 logcat 日志。因此应用内日志显示需要一个 root 侧的转发模块：
+
+1. 刷入 `DownloadGuard-Logger.zip`（Magisk/KernelSU 模块），重启
+2. 该模块把 logcat 里的 `[DownloadGuard]` 行导出到
+   `/data/local/tmp/DownloadGuard/log.txt`
+3. 打开「下载拦截器」App → 点「刷新」即可看到拦截记录
+
+验证拦截是否生效的另一种方式（无需转发模块）：
+
+```bash
+adb logcat -d | grep DownloadGuard
+# 看到 BLOCK 行说明拦截成功
+```
