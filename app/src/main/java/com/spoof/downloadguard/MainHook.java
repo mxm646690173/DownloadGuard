@@ -26,7 +26,7 @@ import de.robv.android.xposed.callbacks.XC_LoadPackage;
 public class MainHook implements IXposedHookLoadPackage {
 
     private static final String[] BLOCKED_EXT = {
-        ".apk", ".apks", ".xapk", ".zip", ".rar", ".7z", ".exe", ".msi", ".scr", ".bat", ".js", ".jar"
+        ".apk", ".apks", ".xapk", ".zip", ".rar", ".7z", ".exe", ".msi", ".scr", ".bat", ".jar"
     };
 
     // getHeaderField() 内部可能再次触发 getInputStream()，必须防重入
@@ -313,12 +313,14 @@ public class MainHook implements IXposedHookLoadPackage {
 
     private static boolean isBlocked(String s) {
         if (s == null) return false;
-        String lower = s.toLowerCase();
+        int cut = s.length();
+        int q = s.indexOf('?');
+        if (q >= 0) cut = q;
+        int h = s.indexOf('#');
+        if (h >= 0 && h < cut) cut = h;
+        String path = s.substring(0, cut).toLowerCase();
         for (String ext : BLOCKED_EXT) {
-            int idx = lower.indexOf(ext);
-            if (idx < 0) continue;
-            String rest = lower.substring(idx + ext.length());
-            if (rest.isEmpty() || rest.charAt(0) == '?' || rest.charAt(0) == '#') return true;
+            if (path.endsWith(ext)) return true;
         }
         return false;
     }
