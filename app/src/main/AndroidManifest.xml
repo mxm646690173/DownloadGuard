@@ -3,7 +3,12 @@
     android:versionCode="1"
     android:versionName="1.0">
     <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="34" />
-    <application android:label="下载拦截器">
+
+    <application
+        android:label="下载拦截器"
+        android:allowBackup="true"
+        android:supportsRtl="true">
+
         <activity
             android:name=".MainActivity"
             android:exported="true">
@@ -11,10 +16,16 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="de.robv.android.xposed.category.MODULE_SETTINGS" />
+            </intent-filter>
         </activity>
+
         <meta-data android:name="xposedmodule" android:value="true" />
-        <meta-data android:name="xposeddescription" android:value="直接拦截 APK/ZIP 等静默下载，不弹窗不放行" />
+        <meta-data android:name="xposeddescription" android:resource="@string/xposed_description" />
         <meta-data android:name="xposedminversion" android:value="93" />
         <meta-data android:name="xposedscope" android:value="*" />
+        <meta-data android:name="xposedsharedprefs" android:value="downloadguard_prefs" />
     </application>
 </manifest>
