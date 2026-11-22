@@ -45,6 +45,7 @@ public class MainHook implements IXposedHookLoadPackage {
         hookHttpUrlConnection(lpparam, pkg);
         hookFileWrite(lpparam, pkg);
         hookWebView(lpparam, pkg);
+        XposedBridge.log("[DownloadGuard] hooks installed for " + pkg);
     }
 
     // ---------------------------------------------------------- DownloadManager
@@ -147,8 +148,9 @@ public class MainHook implements IXposedHookLoadPackage {
     // ---------------------------------------------------------- HttpURLConnection
     private static void hookHttpUrlConnection(XC_LoadPackage.LoadPackageParam lp, String pkg) {
         try {
-            Class<?> huc = XposedHelpers.findClass("java.net.HttpURLConnection", lp.classLoader);
-            XposedHelpers.findAndHookMethod(huc, "getInputStream", new XC_MethodHook() {
+            // getInputStream() 声明在 java.net.URLConnection，不在 HttpURLConnection 自身
+            Class<?> uc = XposedHelpers.findClass("java.net.URLConnection", lp.classLoader);
+            XposedHelpers.findAndHookMethod(uc, "getInputStream", new XC_MethodHook() {
                 @Override
                 protected void afterHookedMethod(MethodHookParam p) throws Throwable {
                     // getHeaderField() 内部可能再调 getInputStream()，防重入
