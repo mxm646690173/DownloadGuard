@@ -16,29 +16,45 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - uses: android-actions/setup-android@v3
-
-      - name: Install SDK platforms and build tools
+      - name: Install Android SDK commandline tools
         run: |
-          sdkmanager "platforms;android-34" "build-tools;34.0.0"
+          set -e
+          export SDK_ROOT="$HOME/android-sdk"
+          mkdir -p "$SDK_ROOT/cmdline-tools"
+          curl -sL -o /tmp/cmdline-tools.zip \
+            https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
+          unzip -q /tmp/cmdline-tools.zip -d /tmp/cmdline-tools
+          mv /tmp/cmdline-tools/cmdline-tools "$SDK_ROOT/cmdline-tools/latest"
+          echo "ANDROID_HOME=$SDK_ROOT" >> $GITHUB_ENV
+          echo "ANDROID_SDK_ROOT=$SDK_ROOT" >> $GITHUB_ENV
+          echo "$SDK_ROOT/cmdline-tools/latest/bin" >> $GITHUB_PATH
+
+      - name: Install SDK platform and build-tools
+        run: |
+          set -e
+          yes | sdkmanager --licenses >/dev/null 2>&1 || true
+          sdkmanager "platforms;android-34" "build-tools;34.0.0" "platform-tools"
 
       - name: Install Gradle 8.7
         run: |
-          curl -sL -o gradle.zip https://services.gradle.org/distributions/gradle-8.7-bin.zip
-          unzip -q gradle.zip -d "$HOME/gradle"
+          curl -sL -o /tmp/gradle.zip https://services.gradle.org/distributions/gradle-8.7-bin.zip
+          unzip -q /tmp/gradle.zip -d "$HOME/gradle"
           echo "$HOME/gradle/gradle-8.7/bin" >> $GITHUB_PATH
 
-      - name: Build unsigned APK
-        run: gradle assembleRelease --no-daemon
+      - name: Create local.properties
+        run: echo "sdk.dir=$ANDROID_HOME" > local.properties
 
-      - name: Sign APK with debug key
+      - name: Build unsigned APK
+        run: gradle assembleRelease --no-daemon --stacktrace
+
+      - name: Sign APK
         run: |
           keytool -genkeypair -v -keystore debug.keystore \
             -storepass android -alias androiddebugkey -keypass android \
             -dname "CN=Debug,O=Debug,C=US" -keyalg RSA -keysize 2048 \
             -validity 10000 >/dev/null 2>&1
-          APKSIGNER=$(find "$ANDROID_SDK_ROOT/build-tools" -name apksigner | head -1)
-          "$APKSIGNER" sign --ks debug.keystore --ks-pass pass:android \
+          "$ANDROID_HOME/build-tools/34.0.0/apksigner" sign \
+            --ks debug.keystore --ks-pass pass:android \
             --out downloadguard.apk \
             app/build/outputs/apk/release/app-release-unsigned.apk
           ls -la downloadguard.apk
