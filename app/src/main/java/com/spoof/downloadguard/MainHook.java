@@ -10,7 +10,6 @@ import java.lang.reflect.Proxy;
 
 import de.robv.android.xposed.IXposedHookLoadPackage;
 import de.robv.android.xposed.XC_MethodHook;
-import de.robv.android.xposed.XposedBridge;
 import de.robv.android.xposed.XposedHelpers;
 import de.robv.android.xposed.callbacks.XC_LoadPackage;
 
@@ -45,7 +44,7 @@ public class MainHook implements IXposedHookLoadPackage {
         hookHttpUrlConnection(lpparam, pkg);
         hookFileWrite(lpparam, pkg);
         hookWebView(lpparam, pkg);
-        XposedBridge.log("[DownloadGuard] hooks installed for " + pkg);
+        LogUtil.log("hooks installed for " + pkg);
     }
 
     // ---------------------------------------------------------- DownloadManager
@@ -108,7 +107,7 @@ public class MainHook implements IXposedHookLoadPackage {
                 protected void beforeHookedMethod(MethodHookParam p) throws Throwable {
                     String url = requestUrl(p.thisObject);
                     if (isBlocked(url)) {
-                        XposedBridge.log("[DownloadGuard] BLOCK OkHttp.execute " + url + " pkg=" + pkg);
+                        LogUtil.log("BLOCK OkHttp.execute " + url + " pkg=" + pkg);
                         p.setThrowable(new IOException("DownloadGuard blocked"));
                     }
                 }
@@ -125,8 +124,7 @@ public class MainHook implements IXposedHookLoadPackage {
                             protected void beforeHookedMethod(MethodHookParam p) throws Throwable {
                                 String url = requestUrl(p.thisObject);
                                 if (isBlocked(url)) {
-                                    XposedBridge.log("[DownloadGuard] BLOCK OkHttp.enqueue " + url
-                                            + " pkg=" + pkg);
+                                    LogUtil.log("BLOCK OkHttp.enqueue " + url + " pkg=" + pkg);
                                     p.setThrowable(new IOException("DownloadGuard blocked"));
                                 }
                             }
@@ -174,8 +172,7 @@ public class MainHook implements IXposedHookLoadPackage {
                         }
 
                         if (blocked) {
-                            XposedBridge.log("[DownloadGuard] BLOCK HttpURLConnection " + s
-                                    + " pkg=" + pkg);
+                            LogUtil.log("BLOCK HttpURLConnection " + s + " pkg=" + pkg);
                             Object result = p.getResult();
                             if (result instanceof InputStream) {
                                 try { ((InputStream) result).close(); } catch (Throwable ignored) { }
@@ -200,7 +197,7 @@ public class MainHook implements IXposedHookLoadPackage {
                         protected void beforeHookedMethod(MethodHookParam p) throws Throwable {
                             String path = (String) p.args[0];
                             if (isBlocked(path)) {
-                                XposedBridge.log("[DownloadGuard] BLOCK write file=" + path + " pkg=" + pkg);
+                                LogUtil.log("BLOCK write file=" + path + " pkg=" + pkg);
                                 p.setThrowable(new IOException("DownloadGuard blocked"));
                             }
                         }
@@ -211,7 +208,7 @@ public class MainHook implements IXposedHookLoadPackage {
                         protected void beforeHookedMethod(MethodHookParam p) throws Throwable {
                             File f = (File) p.args[0];
                             if (f != null && isBlocked(f.getPath())) {
-                                XposedBridge.log("[DownloadGuard] BLOCK write file=" + f.getPath() + " pkg=" + pkg);
+                                LogUtil.log("BLOCK write file=" + f.getPath() + " pkg=" + pkg);
                                 p.setThrowable(new IOException("DownloadGuard blocked"));
                             }
                         }
@@ -227,7 +224,7 @@ public class MainHook implements IXposedHookLoadPackage {
                         protected void beforeHookedMethod(MethodHookParam p) throws Throwable {
                             java.nio.file.Path path = (java.nio.file.Path) p.args[0];
                             if (path != null && isBlocked(path.toString())) {
-                                XposedBridge.log("[DownloadGuard] BLOCK Files.write=" + path + " pkg=" + pkg);
+                                LogUtil.log("BLOCK Files.write=" + path + " pkg=" + pkg);
                                 p.setThrowable(new IOException("DownloadGuard blocked"));
                             }
                         }
@@ -242,7 +239,7 @@ public class MainHook implements IXposedHookLoadPackage {
                         protected void beforeHookedMethod(MethodHookParam p) throws Throwable {
                             String path = (String) p.args[0];
                             if (isBlocked(path)) {
-                                XposedBridge.log("[DownloadGuard] BLOCK RandomAccessFile=" + path + " pkg=" + pkg);
+                                LogUtil.log("BLOCK RandomAccessFile=" + path + " pkg=" + pkg);
                                 p.setThrowable(new IOException("DownloadGuard blocked"));
                             }
                         }
@@ -271,8 +268,7 @@ public class MainHook implements IXposedHookLoadPackage {
                                         if ("onDownloadStart".equals(method.getName())
                                                 && args != null && args.length > 0
                                                 && isBlocked(String.valueOf(args[0]))) {
-                                            XposedBridge.log("[DownloadGuard] BLOCK WebView download="
-                                                    + args[0] + " pkg=" + pkg);
+                                            LogUtil.log("BLOCK WebView download=" + args[0] + " pkg=" + pkg);
                                             return null;   // void 方法，吞掉回调
                                         }
                                         try {
@@ -296,12 +292,12 @@ public class MainHook implements IXposedHookLoadPackage {
     }
 
     private static void block(XC_MethodHook.MethodHookParam p, String hook, String target, String pkg) {
-        XposedBridge.log("[DownloadGuard] BLOCK " + hook + " " + target + " pkg=" + pkg);
+        LogUtil.log("BLOCK " + hook + " " + target + " pkg=" + pkg);
         p.setResult(-1L);   // DownloadManager.INVALID_DOWNLOAD_ID
     }
 
     private static void logSkip(String hook, Throwable t) {
-        XposedBridge.log("[DownloadGuard] " + hook + " hook skipped: " + t.getMessage());
+        LogUtil.log(hook + " hook skipped: " + t.getMessage());
     }
 
     private static boolean isArchiveMime(String s) {
