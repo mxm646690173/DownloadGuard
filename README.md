@@ -1,13 +1,13 @@
 # DownloadGuard — 拦截静默下载 LSPosed 模块
 
-## 作用
-**直接拦截，不弹窗、不提示、不给放行选项。**
+## 覆盖的下载链路（全部直接拦截，不弹窗、不放行）
+1. `DownloadManager.enqueue()` / `addCompletedDownload()` —— 系统下载
+2. `OkHttp` 的 `RealCall.execute()` / `enqueue(Callback)` —— App 自写下载
+3. `HttpURLConnection.getInputStream()` —— 原生网络，含 Content-Disposition / MIME 兜底
+4. `FileOutputStream` / `java.nio.file.Files.write` / `RandomAccessFile` —— 写危险后缀文件
+5. `WebView DownloadListener.onDownloadStart()` —— 网页内下载
 
-Hook `DownloadManager.enqueue()`：当下载 URL 命中危险后缀（`.apk` / `.apks` / `.xapk` /
-`.zip` / `.rar` / `.7z` / `.exe` / `.msi` / `.scr` / `.bat` / `.js` / `.jar`）时，
-直接取消调用并返回 `-1`（无效下载 id），文件不会被下载。
-
-同时 hook `addCompletedDownload()`，拦住伪造"下载已完成"记录的调用。
+命中规则直接取消调用或抛 IOException，下载不会完成。
 
 ## 安装
 1. GitHub Actions 编译完成后下载 `DownloadGuard-APK`
@@ -28,7 +28,7 @@ adb logcat -s Xposed "*:E" | grep DownloadGuard
 3. 用 debug 密钥签名，上传 artifact `DownloadGuard-APK`
 
 ## 已知限制
-- 只拦 `DownloadManager` 路径；如果 App 自己用 OkHttp 下载 APK 到私有目录，不经过系统
-  DownloadManager，本模块拦不到（那属于 App 自带下载器，需要 hook OkHttp 或文件写入）
-- 后缀判断基于 URL，如果 URL 无后缀但 Content-Disposition 给出 `.apk` 文件名，可能漏拦
-- 需要 LSPosed（Zygisk 版）；不需要 Xposed Legacy 框架
+- 用 native 代码（curl/自写 socket）下载且不经 Java 文件 API 的场景拦不到
+- Kotlin 协程 Flow 里直接读 `InputStream` 写入内存再解密的场景，写盘时才触发第 4 层拦截
+- 后缀判断基于 URL/路径/响应头；完全无特征且写内存不落盘的"下载"无法定义，也不该拦
+- 不需要 Xposed Legacy 框架，需要 LSPosed（Zygisk 版）
