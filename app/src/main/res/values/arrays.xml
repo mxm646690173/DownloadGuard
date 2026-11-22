@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 默认作用域：常见浏览器/应用商店，可在 LSPosed 里随时改 -->
+    <string-array name="xposed_scope">
+        <item>com.android.chrome</item>
+        <item>org.mozilla.firefox</item>
+        <item>com.tencent.mtt</item>
+        <item>com.baidu.browser.apps</item>
+        <item>com.android.vending</item>
+    </string-array>
+</resources>
