@@ -47,14 +47,11 @@ jobs:
       - name: Build unsigned APK
         run: gradle assembleRelease --no-daemon --stacktrace
 
-      - name: Sign APK
+      - name: Sign APK with committed keystore
         run: |
-          keytool -genkeypair -v -keystore debug.keystore \
-            -storepass android -alias androiddebugkey -keypass android \
-            -dname "CN=Debug,O=Debug,C=US" -keyalg RSA -keysize 2048 \
-            -validity 10000 >/dev/null 2>&1
           "$ANDROID_HOME/build-tools/34.0.0/apksigner" sign \
-            --ks debug.keystore --ks-pass pass:android \
+            --ks debug.keystore --ks-key-alias androiddebugkey \
+            --ks-pass pass:android --key-pass pass:android \
             --out downloadguard.apk \
             app/build/outputs/apk/release/app-release-unsigned.apk
           ls -la downloadguard.apk
