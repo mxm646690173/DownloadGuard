@@ -1,58 +1,79 @@
 package com.spoof.downloadguard;
 
+import android.content.Context;
+
 import java.io.BufferedReader;
 import java.io.BufferedWriter;
 import java.io.File;
 import java.io.FileReader;
 import java.io.FileWriter;
-import java.text.SimpleDateFormat;
 import java.util.ArrayList;
-import java.util.Date;
 import java.util.List;
-import java.util.Locale;
 
 import de.robv.android.xposed.XposedBridge;
 
-/** 日志工具：hook 与目标 App 共用 /data/local/tmp 下的日志文件 */
+/**
+ * 日志工具：
+ * - hook 进程只写 XposedBridge.log（沙箱进程写不了文件）
+ * - root 转发模块把日志写到 App 的外部私有目录（重启后保留）
+ * - App 自己读取该文件，无需任何权限
+ */
 public class LogUtil {
-    private static final File LOG_DIR = new File("/data/local/tmp/DownloadGuard");
-    private static final File LOG_FILE = new File(LOG_DIR, "log.txt");
+    private static Context appContext;
+    private static final File LEGACY_FILE = new File("/data/local/tmp/DownloadGuard/log.txt");
+
+    public static void init(Context ctx) {
+        appContext = ctx.getApplicationContext();
+    }
 
     public static void log(String msg) {
-        String line = "[" + new SimpleDateFormat("MM-dd HH:mm:ss", Locale.getDefault())
-                .format(new Date()) + "] " + msg;
         XposedBridge.log("[DownloadGuard] " + msg);
-        try {
-            if (!LOG_DIR.exists()) LOG_DIR.mkdirs();
-            BufferedWriter w = new BufferedWriter(new FileWriter(LOG_FILE, true));
-            w.write(line);
-            w.newLine();
-            w.close();
-            // 确保其他进程（模块 App）能读
-            chmod(LOG_DIR, 777);
-            chmod(LOG_FILE, 666);
-        } catch (Throwable ignored) { }
+    }
+
+    /** App 外部私有目录，重启保留，App 自己可读写 */
+    public static File getLogFile() {
+        if (appContext != null) {
+            File dir = appContext.getExternalFilesDir(null);
+            if (dir != null) return new File(dir, "downloadguard.log");
+        }
+        return LEGACY_FILE;
     }
 
     public static List<String> readLogs() {
         List<String> out = new ArrayList<>();
-        try (BufferedReader r = new BufferedReader(new FileReader(LOG_FILE))) {
-            String s;
-            while ((s = r.readLine()) != null) out.add(s);
-        } catch (Throwable ignored) { }
+        File primary = getLogFile();
+        if (readInto(primary, out)) return out;
+        readInto(LEGACY_FILE, out);   // 兼容旧版转发模块的路径
         return out;
     }
 
-    public static void clearLogs() {
-        try {
-            new FileWriter(LOG_FILE, false).close();
-        } catch (Throwable ignored) { }
+    private static boolean readInto(File f, List<String> out) {
+        if (f == null || !f.exists()) return false;
+        try (BufferedReader r = new BufferedReader(new FileReader(f))) {
+            String s;
+            while ((s = r.readLine()) != null) out.add(s);
+            return true;
+        } catch (Throwable ignored) {
+            return false;
+        }
     }
 
-    private static void chmod(File f, int mode) {
-        try {
-            Runtime.getRuntime().exec(new String[]{"chmod", String.valueOf(mode),
-                    f.getAbsolutePath()}).waitFor();
-        } catch (Throwable ignored) { }
+    public static void clearLogs() {
+        for (File f : new File[]{getLogFile(), LEGACY_FILE}) {
+            if (f == null) continue;
+            try {
+                File dir = f.getParentFile();
+                if (dir != null) dir.mkdirs();
+                BufferedWriter w = new BufferedWriter(new FileWriter(f, false));
+                w.close();
+            } catch (Throwable ignored) { }
+        }
+    }
+
+    /** 返回日志文件指纹，用于检测变化触发自动刷新 */
+    public static String logFingerprint() {
+        File f = getLogFile();
+        if (f == null || !f.exists()) return "";
+        return f.getAbsolutePath() + ":" + f.length() + ":" + f.lastModified();
     }
 }
