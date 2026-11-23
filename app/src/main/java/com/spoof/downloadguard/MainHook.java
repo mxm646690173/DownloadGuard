@@ -56,7 +56,8 @@ public class MainHook implements IXposedHookLoadPackage {
                         @Override
                         protected void beforeHookedMethod(MethodHookParam p) {
                             String url = extractUrl((DownloadManager.Request) p.args[0]);
-                            if (isBlocked(url)) block(p, "DownloadManager.enqueue", url, pkg);
+                            if (isBlocked(url) || looksLikeApkDownload(url))
+                                block(p, "DownloadManager.enqueue", url, pkg);
                         }
                     });
         } catch (Throwable t) { logSkip("DownloadManager.enqueue", t); }
@@ -106,7 +107,7 @@ public class MainHook implements IXposedHookLoadPackage {
                 @Override
                 protected void beforeHookedMethod(MethodHookParam p) throws Throwable {
                     String url = requestUrl(p.thisObject);
-                    if (isBlocked(url)) {
+                    if (isBlocked(url) || looksLikeApkDownload(url)) {
                         LogUtil.log("BLOCK OkHttp.execute " + url + " pkg=" + pkg);
                         p.setThrowable(new IOException("DownloadGuard blocked"));
                     }
@@ -123,7 +124,7 @@ public class MainHook implements IXposedHookLoadPackage {
                             @Override
                             protected void beforeHookedMethod(MethodHookParam p) throws Throwable {
                                 String url = requestUrl(p.thisObject);
-                                if (isBlocked(url)) {
+                                if (isBlocked(url) || looksLikeApkDownload(url)) {
                                     LogUtil.log("BLOCK OkHttp.enqueue " + url + " pkg=" + pkg);
                                     p.setThrowable(new IOException("DownloadGuard blocked"));
                                 }
@@ -157,7 +158,7 @@ public class MainHook implements IXposedHookLoadPackage {
                     try {
                         Object url = XposedHelpers.callMethod(p.thisObject, "getURL");
                         String s = url == null ? null : url.toString();
-                        boolean blocked = isBlocked(s);
+                        boolean blocked = isBlocked(s) || looksLikeApkDownload(s);
 
                         // 响应头在原始方法执行后才有值，所以兜底检查必须放在 after
                         if (!blocked) {
@@ -266,10 +267,19 @@ public class MainHook implements IXposedHookLoadPackage {
                                     new Class<?>[]{dl},
                                     (obj, method, args) -> {
                                         if ("onDownloadStart".equals(method.getName())
-                                                && args != null && args.length > 0
-                                                && isBlocked(String.valueOf(args[0]))) {
-                                            LogUtil.log("BLOCK WebView download=" + args[0] + " pkg=" + pkg);
-                                            return null;   // void 方法，吞掉回调
+                                                && args != null && args.length >= 5) {
+                                            String url = String.valueOf(args[0]);
+                                            String disposition = String.valueOf(args[2]);
+                                            String mime = String.valueOf(args[3]);
+                                            // URL 无后缀时，靠 Content-Disposition 的文件名和 MIME 判定
+                                            if (isBlocked(url) || isBlocked(disposition)
+                                                    || isArchiveMime(mime)
+                                                    || looksLikeApkDownload(url)) {
+                                                LogUtil.log("BLOCK WebView download=" + url
+                                                        + " disp=" + disposition + " mime=" + mime
+                                                        + " pkg=" + pkg);
+                                                return null;   // void 方法，吞掉回调
+                                            }
                                         }
                                         try {
                                             return method.invoke(origin, args);
@@ -309,6 +319,36 @@ public class MainHook implements IXposedHookLoadPackage {
             || c.contains("application/x-msdownload")
             || c.contains("application/x-rar-compressed")
             || c.contains("application/x-7z-compressed");
+    }
+
+    /**
+     * URL 无后缀但确实是 APK 下载的兜底识别。
+     * 应用商店/广告落地页常见格式：/pkg/upload/... 带 md5hash/xcid/f_ver 等签名参数，
+     * 或路径里含 apk/download 段。仅靠后缀会漏掉这类链接。
+     */
+    private static boolean looksLikeApkDownload(String s) {
+        if (s == null) return false;
+        String u = s.toLowerCase();
+
+        // 路径段命中（只看 ? 之前，避免误伤普通页面的查询串）
+        int cut = u.indexOf('?');
+        if (cut < 0) cut = u.length();
+        String path = u.substring(0, cut);
+        String[] pathMarks = {
+            "/apk", "/apks/", "/pkg/upload", "/appcenter/pkg/",
+            "/download.apk", "/download/", "/package/"
+        };
+        for (String mark : pathMarks) {
+            if (path.contains(mark)) return true;
+        }
+
+        // 查询串里的 APK 分发签名参数组合（单个参数不足以判定，需组合）
+        int marks = 0;
+        String[] queryMarks = {"md5hash=", "xcid=", "xcsched=", "xauzkey=", "f_ver=", "xcresfp="};
+        for (String mark : queryMarks) {
+            if (u.contains(mark)) marks++;
+        }
+        return marks >= 3;
     }
 
     private static boolean isBlocked(String s) {
