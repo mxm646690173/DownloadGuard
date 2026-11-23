@@ -246,6 +246,41 @@ public class MainHook implements IXposedHookLoadPackage {
                         }
                     });
         } catch (Throwable t) { logSkip("RandomAccessFile", t); }
+
+        // 第4条：拦"先写临时文件，下载完再改名成 .apk"的路径
+        try {
+            Class<?> fileCls = XposedHelpers.findClass("java.io.File", lp.classLoader);
+            XposedHelpers.findAndHookMethod(fileCls, "renameTo", File.class,
+                    new XC_MethodHook() {
+                        @Override
+                        protected void beforeHookedMethod(MethodHookParam p) throws Throwable {
+                            File src = (File) p.thisObject;
+                            File dst = (File) p.args[0];
+                            if (dst != null && isBlocked(dst.getPath())) {
+                                LogUtil.log("BLOCK renameTo " + (src != null ? src.getPath() : "?")
+                                        + " -> " + dst.getPath() + " pkg=" + pkg);
+                                p.setResult(false);
+                            }
+                        }
+                    });
+        } catch (Throwable t) { logSkip("File.renameTo", t); }
+
+        try {
+            Class<?> files = XposedHelpers.findClass("java.nio.file.Files", lp.classLoader);
+            XposedHelpers.findAndHookMethod(files, "move",
+                    java.nio.file.Path.class, java.nio.file.Path.class,
+                    java.nio.file.CopyOption[].class,
+                    new XC_MethodHook() {
+                        @Override
+                        protected void beforeHookedMethod(MethodHookParam p) throws Throwable {
+                            java.nio.file.Path dst = (java.nio.file.Path) p.args[1];
+                            if (dst != null && isBlocked(dst.toString())) {
+                                LogUtil.log("BLOCK Files.move -> " + dst + " pkg=" + pkg);
+                                p.setThrowable(new IOException("DownloadGuard blocked"));
+                            }
+                        }
+                    });
+        } catch (Throwable t) { logSkip("Files.move", t); }
     }
 
     // ---------------------------------------------------------- WebView
