@@ -29,6 +29,17 @@ public class MainHook implements IXposedHookLoadPackage {
         ".apk", ".apks", ".xapk", ".zip", ".rar", ".7z", ".exe", ".msi", ".scr", ".bat", ".jar"
     };
 
+    // 静默拦截用的无效地址：指向本地不存在端口，连接立即失败，
+    // 浏览器视为"下载完成(失败)"，不弹任何提示
+    private static final String SILENT_URL = "http://127.0.0.1:1/dl.silent";
+
+    // 替换 Request 内部的 mUri（字段私有，反射改写；AOSP 各版本字段名一致）
+    private static void replaceUri(DownloadManager.Request req, String newUrl) {
+        try {
+            XposedHelpers.setObjectField(req, "mUri", android.net.Uri.parse(newUrl));
+        } catch (Throwable ignored) { }
+    }
+
     // getHeaderField() 内部可能再次触发 getInputStream()，必须防重入
     private static final ThreadLocal<Boolean> tInHttpGetStream = new ThreadLocal<>();
 
@@ -116,9 +127,13 @@ public class MainHook implements IXposedHookLoadPackage {
                     DownloadManager.Request.class, new XC_MethodHook() {
                         @Override
                         protected void beforeHookedMethod(MethodHookParam p) {
-                            String url = extractUrl((DownloadManager.Request) p.args[0]);
-                            if (isBlocked(url) || looksLikeApkDownload(url))
-                                block(p, "DownloadManager.enqueue", url, pkg);
+                            DownloadManager.Request req = (DownloadManager.Request) p.args[0];
+                            String url = extractUrl(req);
+                            if (isBlocked(url) || looksLikeApkDownload(url)) {
+                                LogUtil.log("BLOCK DownloadManager.enqueue " + url + " pkg=" + pkg);
+                                // 静默拦截：换成无效 URL，下载立刻失败完成，浏览器无提示
+                                replaceUri(req, SILENT_URL);
+                            }
                         }
                     });
         } catch (Throwable t) { logSkip("DownloadManager.enqueue", t); }
@@ -374,7 +389,12 @@ public class MainHook implements IXposedHookLoadPackage {
                                                 LogUtil.log("BLOCK WebView download=" + url
                                                         + " disp=" + disposition + " mime=" + mime
                                                         + " pkg=" + pkg);
-                                                return null;   // void 方法，吞掉回调
+                                                // 静默拦截：把 URL 换成无效地址，
+                                                // 浏览器会"正常完成"一个 0 字节下载，不弹提示
+                                                args[0] = SILENT_URL;
+                                                args[2] = null;
+                                                args[3] = "application/octet-stream";
+                                                args[4] = 0L;
                                             }
                                         }
                                         try {
