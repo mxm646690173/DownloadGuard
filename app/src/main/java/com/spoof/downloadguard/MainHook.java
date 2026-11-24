@@ -46,9 +46,13 @@ public class MainHook implements IXposedHookLoadPackage {
     @Override
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lpparam) {
         String pkg = lpparam.packageName;
-        // 只跳过模块自身与 LSPosed 管理器；作用域由 LSPosed 控制，不再按包名前缀过滤
+        // 只作用于普通 App 进程：跳过模块自身、系统进程（android=system_server、
+        // com.android.*、com.google.*），避免 system_server 崩溃导致整机重启
         if (pkg == null || pkg.equals("com.spoof.downloadguard")
-                || pkg.equals("org.lsposed.manager")) return;
+                || pkg.equals("org.lsposed.manager")
+                || pkg.equals("android")
+                || pkg.startsWith("com.android.")
+                || pkg.startsWith("com.google.")) return;
 
         hookDownloadManager(lpparam, pkg);
         hookOkHttp(lpparam, pkg);
@@ -287,6 +291,19 @@ public class MainHook implements IXposedHookLoadPackage {
     }
 
     // ---------------------------------------------------------- 文件写入
+    // 只拦"下载目录"里的危险后缀写入，避免误伤 App 内部缓存/配置
+    // （很多 App 用 .zip/.jar 存缓存、游戏资源，全局拦会直接把 App 写崩）
+    private static boolean isDownloadPath(String s) {
+        if (s == null) return false;
+        String lower = s.toLowerCase();
+        return lower.contains("/download/") || lower.contains("/downloads/")
+             || lower.contains("download_cache");
+    }
+
+    private static boolean shouldBlockWrite(String s) {
+        return isDownloadPath(s) && isBlocked(s);
+    }
+
     private static void hookFileWrite(XC_LoadPackage.LoadPackageParam lp, String pkg) {
         try {
             Class<?> fos = XposedHelpers.findClass("java.io.FileOutputStream", lp.classLoader);
@@ -295,7 +312,7 @@ public class MainHook implements IXposedHookLoadPackage {
                         @Override
                         protected void beforeHookedMethod(MethodHookParam p) throws Throwable {
                             String path = (String) p.args[0];
-                            if (isBlocked(path)) {
+                            if (shouldBlockWrite(path)) {
                                 LogUtil.log("BLOCK write file=" + path + " pkg=" + pkg);
                                 p.setThrowable(new IOException("DownloadGuard blocked"));
                             }
@@ -306,7 +323,7 @@ public class MainHook implements IXposedHookLoadPackage {
                         @Override
                         protected void beforeHookedMethod(MethodHookParam p) throws Throwable {
                             File f = (File) p.args[0];
-                            if (f != null && isBlocked(f.getPath())) {
+                            if (f != null && shouldBlockWrite(f.getPath())) {
                                 LogUtil.log("BLOCK write file=" + f.getPath() + " pkg=" + pkg);
                                 p.setThrowable(new IOException("DownloadGuard blocked"));
                             }
@@ -322,7 +339,7 @@ public class MainHook implements IXposedHookLoadPackage {
                         @Override
                         protected void beforeHookedMethod(MethodHookParam p) throws Throwable {
                             java.nio.file.Path path = (java.nio.file.Path) p.args[0];
-                            if (path != null && isBlocked(path.toString())) {
+                            if (path != null && shouldBlockWrite(path.toString())) {
                                 LogUtil.log("BLOCK Files.write=" + path + " pkg=" + pkg);
                                 p.setThrowable(new IOException("DownloadGuard blocked"));
                             }
@@ -337,7 +354,7 @@ public class MainHook implements IXposedHookLoadPackage {
                         @Override
                         protected void beforeHookedMethod(MethodHookParam p) throws Throwable {
                             String path = (String) p.args[0];
-                            if (isBlocked(path)) {
+                            if (shouldBlockWrite(path)) {
                                 LogUtil.log("BLOCK RandomAccessFile=" + path + " pkg=" + pkg);
                                 p.setThrowable(new IOException("DownloadGuard blocked"));
                             }
@@ -352,11 +369,9 @@ public class MainHook implements IXposedHookLoadPackage {
                     new XC_MethodHook() {
                         @Override
                         protected void beforeHookedMethod(MethodHookParam p) throws Throwable {
-                            File src = (File) p.thisObject;
                             File dst = (File) p.args[0];
-                            if (dst != null && isBlocked(dst.getPath())) {
-                                LogUtil.log("BLOCK renameTo " + (src != null ? src.getPath() : "?")
-                                        + " -> " + dst.getPath() + " pkg=" + pkg);
+                            if (dst != null && shouldBlockWrite(dst.getPath())) {
+                                LogUtil.log("BLOCK renameTo -> " + dst.getPath() + " pkg=" + pkg);
                                 p.setResult(false);
                             }
                         }
@@ -372,7 +387,7 @@ public class MainHook implements IXposedHookLoadPackage {
                         @Override
                         protected void beforeHookedMethod(MethodHookParam p) throws Throwable {
                             java.nio.file.Path dst = (java.nio.file.Path) p.args[1];
-                            if (dst != null && isBlocked(dst.toString())) {
+                            if (dst != null && shouldBlockWrite(dst.toString())) {
                                 LogUtil.log("BLOCK Files.move -> " + dst + " pkg=" + pkg);
                                 p.setThrowable(new IOException("DownloadGuard blocked"));
                             }
@@ -472,9 +487,11 @@ public class MainHook implements IXposedHookLoadPackage {
         int cut = u.indexOf('?');
         if (cut < 0) cut = u.length();
         String path = u.substring(0, cut);
+        // 路径段命中（只看 ? 之前，避免误伤普通页面的查询串）。
+        // 注意：/download/、/package/ 太宽（App API 路径常见），会误杀正常请求，
+        // 所以 URL 层只认带 .apk 的路径或强分发特征
         String[] pathMarks = {
-            "/apk", "/apks/", "/pkg/upload", "/appcenter/pkg/",
-            "/download.apk", "/download/", "/package/"
+            "/apk", "/apks/", "/pkg/upload", "/appcenter/pkg/", "/download.apk"
         };
         for (String mark : pathMarks) {
             if (path.contains(mark)) return true;
