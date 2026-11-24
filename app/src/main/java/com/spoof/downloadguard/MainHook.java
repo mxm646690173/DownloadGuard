@@ -44,7 +44,68 @@ public class MainHook implements IXposedHookLoadPackage {
         hookHttpUrlConnection(lpparam, pkg);
         hookFileWrite(lpparam, pkg);
         hookWebView(lpparam, pkg);
+        hookInstallIntent(lpparam, pkg);
         LogUtil.log("hooks installed for " + pkg);
+    }
+
+    // ---------------------------------------------------------- 安装 Intent
+    /**
+     * 拦截 APK 安装唤起：广告落地页下载完 APK 后通常用
+     * Intent(type=application/vnd.android.package-archive 或 data=*.apk)
+     * 发起安装，系统弹「使用软件包安装程序打开 / 仅此一次 / 始终」选择框。
+     * 在 startActivity 阶段直接吞掉，弹窗就不会出现。
+     */
+    private static void hookInstallIntent(XC_LoadPackage.LoadPackageParam lp, String pkg) {
+        XC_MethodHook installHook = new XC_MethodHook() {
+            @Override
+            protected void beforeHookedMethod(MethodHookParam p) {
+                for (Object arg : p.args) {
+                    if (!(arg instanceof android.content.Intent)) continue;
+                    android.content.Intent it = (android.content.Intent) arg;
+                    if (isInstallIntent(it)) {
+                        LogUtil.log("BLOCK install intent act=" + it.getAction()
+                                + " data=" + it.getDataString()
+                                + " type=" + it.getType() + " pkg=" + pkg);
+                        // 抛异常中断，避免 startActivity 继续执行
+                        p.setThrowable(new SecurityException("DownloadGuard blocked"));
+                        return;
+                    }
+                }
+            }
+        };
+        try {
+            Class<?> ctx = XposedHelpers.findClass("android.content.Context", lp.classLoader);
+            Class<?> act = XposedHelpers.findClass("android.app.Activity", lp.classLoader);
+            // Context.startActivity(Intent) 与带 options 重载
+            XposedHelpers.findAndHookMethod(ctx, "startActivity",
+                    android.content.Intent.class, installHook);
+            XposedHelpers.findAndHookMethod(ctx, "startActivity",
+                    android.content.Intent.class, android.os.Bundle.class, installHook);
+            // Activity.startActivityForResult（安装页常用它等结果）
+            XposedHelpers.findAndHookMethod(act, "startActivityForResult",
+                    android.content.Intent.class, int.class, installHook);
+            XposedHelpers.findAndHookMethod(act, "startActivityForResult",
+                    android.content.Intent.class, int.class, android.os.Bundle.class, installHook);
+        } catch (Throwable t) { logSkip("InstallIntent", t); }
+    }
+
+    private static boolean isInstallIntent(android.content.Intent it) {
+        if (it == null) return false;
+        String type = it.getType();
+        if (type != null && isArchiveMime(type)) return true;
+
+        String action = it.getAction();
+        boolean installAction =
+                "android.intent.action.VIEW".equals(action)
+             || "android.intent.action.INSTALL_PACKAGE".equals(action)
+             || "android.intent.action.VIEW_DOWNLOADS".equals(action);
+        if (!installAction) return false;
+
+        // data 带 .apk 后缀，或 type 声明了 archive MIME
+        String data = it.getDataString();
+        if (isBlocked(data)) return true;
+        if (data != null && data.toLowerCase().contains("package-archive")) return true;
+        return false;
     }
 
     // ---------------------------------------------------------- DownloadManager
