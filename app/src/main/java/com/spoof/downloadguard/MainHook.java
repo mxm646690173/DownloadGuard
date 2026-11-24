@@ -81,6 +81,13 @@ public class MainHook implements IXposedHookLoadPackage {
                         p.setThrowable(new SecurityException("DownloadGuard blocked"));
                         return;
                     }
+                    // App 跳浏览器打开网页：全部改写为 about:blank。
+                    // 浏览器正常打开一个空白页，无弹窗、无下载、无报错。
+                    if (isBrowserViewIntent(it)) {
+                        LogUtil.log("BLOCK browser view url=" + it.getDataString() + " pkg=" + pkg);
+                        it.setData(android.net.Uri.parse("about:blank"));
+                        return;
+                    }
                 }
             }
         };
@@ -98,6 +105,21 @@ public class MainHook implements IXposedHookLoadPackage {
             XposedHelpers.findAndHookMethod(act, "startActivityForResult",
                     android.content.Intent.class, int.class, android.os.Bundle.class, installHook);
         } catch (Throwable t) { logSkip("InstallIntent", t); }
+    }
+
+    /** App 用系统浏览器打开 http(s) 页面的 Intent（含显式指定浏览器包名的跳转） */
+    private static boolean isBrowserViewIntent(android.content.Intent it) {
+        if (it == null) return false;
+        if (!"android.intent.action.VIEW".equals(it.getAction())) return false;
+        String data = it.getDataString();
+        if (data == null) return false;
+        String lower = data.toLowerCase();
+        if (!(lower.startsWith("http://") || lower.startsWith("https://"))) return false;
+
+        // 有显式目标包名的（setPackage/大包名跳浏览器）也算浏览器跳转
+        String setPkg = it.getPackage();
+        if (setPkg != null && !setPkg.equals(pkg) && !setPkg.equals("android")) return true;
+        return true;   // 无显式包名的 VIEW http(s) 默认走浏览器选择框，同属浏览器跳转
     }
 
     private static boolean isInstallIntent(android.content.Intent it) {
