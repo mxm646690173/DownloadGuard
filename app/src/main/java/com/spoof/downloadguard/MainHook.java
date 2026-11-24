@@ -195,6 +195,8 @@ public class MainHook implements IXposedHookLoadPackage {
     // ---------------------------------------------------------- OkHttp
     private static void hookOkHttp(XC_LoadPackage.LoadPackageParam lp, String pkg) {
         // 只 hook 具体实现类 RealCall。hook okhttp3.Call 接口方法不会拦到实现类的调用。
+        // 静默拦截：替换请求 URL 为无效地址，让 OkHttp 正常走失败路径，
+        // 不抛异常（抛 IOException 会让没做容错的 App 直接闪退，如网易云音乐）。
         Class<?> callCls = findClassAny(lp.classLoader,
                 "okhttp3.internal.connection.RealCall",
                 "com.squareup.okhttp.internal.http.RealCall");
@@ -204,10 +206,10 @@ public class MainHook implements IXposedHookLoadPackage {
             XposedHelpers.findAndHookMethod(callCls, "execute", new XC_MethodHook() {
                 @Override
                 protected void beforeHookedMethod(MethodHookParam p) throws Throwable {
-                    String url = requestUrl(p.thisObject);
-                    if (isBlocked(url) || looksLikeApkDownload(url)) {
-                        LogUtil.log("BLOCK OkHttp.execute " + url + " pkg=" + pkg);
-                        p.setThrowable(new IOException("DownloadGuard blocked"));
+                    Object req = getRequest(p.thisObject);
+                    if (req != null && shouldBlockOkHttp(req)) {
+                        LogUtil.log("BLOCK OkHttp.execute " + requestUrl(p.thisObject) + " pkg=" + pkg);
+                        swapOkHttpUrl(req, p.thisObject);
                     }
                 }
             });
@@ -221,15 +223,56 @@ public class MainHook implements IXposedHookLoadPackage {
                         new XC_MethodHook() {
                             @Override
                             protected void beforeHookedMethod(MethodHookParam p) throws Throwable {
-                                String url = requestUrl(p.thisObject);
-                                if (isBlocked(url) || looksLikeApkDownload(url)) {
-                                    LogUtil.log("BLOCK OkHttp.enqueue " + url + " pkg=" + pkg);
-                                    p.setThrowable(new IOException("DownloadGuard blocked"));
+                                Object req = getRequest(p.thisObject);
+                                if (req != null && shouldBlockOkHttp(req)) {
+                                    LogUtil.log("BLOCK OkHttp.enqueue " + requestUrl(p.thisObject) + " pkg=" + pkg);
+                                    swapOkHttpUrl(req, p.thisObject);
                                 }
                             }
                         });
             }
         } catch (Throwable t) { logSkip("OkHttp.enqueue", t); }
+    }
+
+    private static Object getRequest(Object call) {
+        try { return XposedHelpers.callMethod(call, "request"); }
+        catch (Throwable t) { return null; }
+    }
+
+    /** OkHttp 请求判定：URL 或 header 命中才拦 */
+    private static boolean shouldBlockOkHttp(Object req) {
+        try {
+            Object url = XposedHelpers.callMethod(req, "url");
+            String s = url == null ? null : url.toString();
+            return isBlocked(s) || looksLikeApkDownload(s);
+        } catch (Throwable t) { return false; }
+    }
+
+    /** 把 RealCall 内部的 Request 换成指向无效地址的新 Request（builder 模式） */
+    private static void swapOkHttpUrl(Object req, Object call) {
+        try {
+            Object builder = XposedHelpers.callMethod(req, "newBuilder");
+            Object newUrlReq = XposedHelpers.callMethod(builder, "url", SILENT_URL);
+            newUrlReq = XposedHelpers.callMethod(newUrlReq, "build");
+            // RealCall 的 request 字段名在 3.x/4.x 都是 originalRequest 或 request
+            if (!trySetField(call, req, newUrlReq, "originalRequest")
+                    && !trySetField(call, req, newUrlReq, "request")) {
+                trySetField(call, req, newUrlReq, "original");
+            }
+        } catch (Throwable ignored) { }
+    }
+
+    private static boolean trySetField(Object call, Object oldReq, Object newReq, String fieldName) {
+        try {
+            Object cur = XposedHelpers.getObjectField(call, fieldName);
+            if (cur == oldReq) {
+                XposedHelpers.setObjectField(call, fieldName, newReq);
+                return true;
+            }
+            return cur != null;   // 字段存在但引用不同，也算找到
+        } catch (Throwable t) {
+            return false;
+        }
     }
 
     private static String requestUrl(Object call) {
