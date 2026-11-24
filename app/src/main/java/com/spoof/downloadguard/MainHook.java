@@ -118,12 +118,8 @@ public class MainHook implements IXposedHookLoadPackage {
         String data = it.getDataString();
         if (data == null) return false;
         String lower = data.toLowerCase();
-        if (!(lower.startsWith("http://") || lower.startsWith("https://"))) return false;
-
-        // 有显式目标包名的（setPackage/大包名跳浏览器）也算浏览器跳转
-        String setPkg = it.getPackage();
-        if (setPkg != null && !setPkg.equals(pkg) && !setPkg.equals("android")) return true;
-        return true;   // 无显式包名的 VIEW http(s) 默认走浏览器选择框，同属浏览器跳转
+        // 无显式包名的 VIEW http(s) 默认走浏览器，显式包名跳浏览器同理，全拦
+        return lower.startsWith("http://") || lower.startsWith("https://");
     }
 
     private static boolean isInstallIntent(android.content.Intent it) {
