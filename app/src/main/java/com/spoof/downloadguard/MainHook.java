@@ -77,12 +77,15 @@ public class MainHook implements IXposedHookLoadPackage {
                 for (Object arg : p.args) {
                     if (!(arg instanceof android.content.Intent)) continue;
                     android.content.Intent it = (android.content.Intent) arg;
+                    if (it == null) continue;
                     if (isInstallIntent(it)) {
                         LogUtil.log("BLOCK install intent act=" + it.getAction()
                                 + " data=" + it.getDataString()
                                 + " type=" + it.getType() + " pkg=" + pkg);
-                        // 抛异常中断，避免 startActivity 继续执行
-                        p.setThrowable(new SecurityException("DownloadGuard blocked"));
+                        // 静默改写：data 换成 about:blank。Intent 正常派发，
+                        // 调用方不抛异常不闪退，系统也装不上任何东西
+                        it.setData(android.net.Uri.parse("about:blank"));
+                        it.setType(null);
                         return;
                     }
                     // App 跳浏览器打开网页：全部改写为 about:blank。
