@@ -25,37 +25,7 @@ public class MainHook implements IXposedHookLoadPackage {
                 || pkg.startsWith("com.google.")) return;
 
         hookStartActivity(lpparam, pkg);
-        hookWebViewLoad(lpparam, pkg);
         LogUtil.log("hooks installed for " + pkg);
-    }
-
-    /**
-     * 无论 WebView 收到什么 http(s) 地址，一律强制加载空白页。
-     * 浏览器的一切网页渲染都走 WebView，广告页在源头就被换成空白。
-     */
-    private static void hookWebViewLoad(XC_LoadPackage.LoadPackageParam lp, String pkg) {
-        try {
-            Class<?> wv = XposedHelpers.findClass("android.webkit.WebView", lp.classLoader);
-            XC_MethodHook blankHook = new XC_MethodHook() {
-                @Override
-                protected void beforeHookedMethod(MethodHookParam p) {
-                    Object urlArg = p.args != null && p.args.length > 0 ? p.args[0] : null;
-                    String url = urlArg == null ? null : urlArg.toString();
-                    if (isHttpUrl(url)) {
-                        LogUtil.log("BLOCK webview load url=" + url + " pkg=" + pkg);
-                        p.args[0] = "about:blank";
-                        if (p.args.length > 1 && p.args[1] instanceof java.util.Map) {
-                            p.args[1] = null;   // 清掉附加请求头
-                        }
-                    }
-                }
-            };
-            XposedHelpers.findAndHookMethod(wv, "loadUrl", String.class, blankHook);
-            XposedHelpers.findAndHookMethod(wv, "loadUrl", String.class, java.util.Map.class, blankHook);
-            XposedHelpers.findAndHookMethod(wv, "postUrl", String.class, byte[].class, blankHook);
-        } catch (Throwable t) {
-            LogUtil.log("webview hook skipped: " + t.getMessage());
-        }
     }
 
     private static void hookStartActivity(XC_LoadPackage.LoadPackageParam lp, String pkg) {
