@@ -64,9 +64,11 @@ public class MainHook implements IXposedHookLoadPackage {
             LogUtil.log("DownloadManager hook skipped: " + t.getMessage());
         }
 
-        // 2. 文件写入（不限目录，路径以危险后缀结尾即拦；换成无效路径，不抛异常）
+        // 2. 文件写入（不限目录，路径以危险后缀结尾即拦；换成 App 自己 cache 目录下的
+        //    无害临时文件——该目录必然可写，构造不会抛 FileNotFoundException，不崩溃）
         try {
             Class<?> fos = XposedHelpers.findClass("java.io.FileOutputStream", lp.classLoader);
+            final String cacheDir = "/data/data/" + pkg + "/cache";
             XC_MethodHook pathHook = new XC_MethodHook() {
                 @Override
                 protected void beforeHookedMethod(MethodHookParam p) {
@@ -75,7 +77,7 @@ public class MainHook implements IXposedHookLoadPackage {
                             ? ((File) p.args[0]).getPath() : p.args[0].toString();
                     if (isHttpApkUrl(path)) {
                         LogUtil.log("BLOCK write " + path + " pkg=" + pkg);
-                        p.args[0] = new File("/dev/null/.blocked_" + System.nanoTime());
+                        p.args[0] = new File(cacheDir, ".blocked_" + System.nanoTime());
                     }
                 }
             };
