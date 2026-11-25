@@ -35,10 +35,9 @@ public class MainHook implements IXposedHookLoadPackage {
     }
 
     // ---------------------------------------------------------------- 静默下载拦截
-    // 三层全部"替换参数"式拦截，不抛异常，调用方走正常失败路径，不会崩溃：
+    // 两层"替换参数"式拦截，不抛异常，调用方走正常失败路径，不会崩溃：
     //   1. DownloadManager.enqueue → URL 换成无效地址
-    //   2. WebView 下载回调 → URL 换成无效地址
-    //   3. FileOutputStream/File 构造（限下载目录 + 危险后缀）→ 路径换成无效路径
+    //   2. FileOutputStream 构造（不限目录，.apk 等后缀即拦）→ 路径换成无效路径
     private static final String SILENT_URL = "http://127.0.0.1:1/dl.silent";
 
     private static void hookDownloadSilent(XC_LoadPackage.LoadPackageParam lp, String pkg) {
@@ -65,50 +64,7 @@ public class MainHook implements IXposedHookLoadPackage {
             LogUtil.log("DownloadManager hook skipped: " + t.getMessage());
         }
 
-        // 2. WebView 下载回调（代理替换监听器）
-        try {
-            final Class<?> dl = XposedHelpers.findClass("android.webkit.DownloadListener", lp.classLoader);
-            Class<?> wv = XposedHelpers.findClass("android.webkit.WebView", lp.classLoader);
-            final ClassLoader cl = lp.classLoader;
-            XposedHelpers.findAndHookMethod(wv, "setDownloadListener", dl,
-                    new XC_MethodHook() {
-                        @Override
-                        protected void beforeHookedMethod(MethodHookParam p) {
-                            final Object origin = p.args[0];
-                            if (origin == null) return;
-                            Object proxy = java.lang.reflect.Proxy.newProxyInstance(
-                                    cl, new Class<?>[]{dl},
-                                    (obj, m, args) -> {
-                                        if ("onDownloadStart".equals(m.getName())
-                                                && args != null && args.length >= 1) {
-                                            String u = String.valueOf(args[0]);
-                                            String disp = args.length > 2 && args[2] != null
-                                                    ? args[2].toString() : "";
-                                            String mime = args.length > 3 && args[3] != null
-                                                    ? args[3].toString() : "";
-                                            if (isHttpApkUrl(u) || looksLikeApkUrl(u)
-                                                    || isHttpApkUrl(disp)
-                                                    || isArchiveMime(mime)) {
-                                                LogUtil.log("BLOCK WebView dl url=" + u + " pkg=" + pkg);
-                                                args[0] = SILENT_URL;
-                                                if (args.length > 2) args[2] = "";
-                                                if (args.length > 3) args[3] = "application/octet-stream";
-                                            }
-                                        }
-                                        try {
-                                            return m.invoke(origin, args);
-                                        } catch (java.lang.reflect.InvocationTargetException e) {
-                                            throw e.getCause();
-                                        }
-                                    });
-                            p.args[0] = proxy;
-                        }
-                    });
-        } catch (Throwable t) {
-            LogUtil.log("WebView hook skipped: " + t.getMessage());
-        }
-
-        // 3. 文件写入（仅限下载目录 + 危险后缀；换成无效路径，不抛异常）
+        // 2. 文件写入（不限目录，路径以危险后缀结尾即拦；换成无效路径，不抛异常）
         try {
             Class<?> fos = XposedHelpers.findClass("java.io.FileOutputStream", lp.classLoader);
             XC_MethodHook pathHook = new XC_MethodHook() {
@@ -117,7 +73,7 @@ public class MainHook implements IXposedHookLoadPackage {
                     if (p.args.length < 1 || p.args[0] == null) return;
                     String path = p.args[0] instanceof File
                             ? ((File) p.args[0]).getPath() : p.args[0].toString();
-                    if (shouldBlockWrite(path)) {
+                    if (isHttpApkUrl(path)) {
                         LogUtil.log("BLOCK write " + path + " pkg=" + pkg);
                         p.args[0] = new File("/dev/null/.blocked_" + System.nanoTime());
                     }
@@ -134,23 +90,6 @@ public class MainHook implements IXposedHookLoadPackage {
             Object uri = XposedHelpers.getObjectField(req, "mUri");
             return uri == null ? null : uri.toString();
         } catch (Throwable t) { return null; }
-    }
-
-    private static boolean isArchiveMime(String s) {
-        if (s == null) return false;
-        String c = s.toLowerCase();
-        return c.contains("application/vnd.android.package-archive")
-            || c.contains("application/x-msdownload");
-    }
-
-    private static boolean isDownloadPath(String s) {
-        if (s == null) return false;
-        String lower = s.toLowerCase();
-        return lower.contains("/download/") || lower.contains("/downloads/");
-    }
-
-    private static boolean shouldBlockWrite(String s) {
-        return isDownloadPath(s) && isHttpApkUrl(s);
     }
 
     private static final String[] APK_PATH_MARKS = {
