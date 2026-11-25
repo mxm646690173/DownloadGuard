@@ -8,12 +8,14 @@ import de.robv.android.xposed.XposedHelpers;
 import de.robv.android.xposed.callbacks.XC_LoadPackage;
 
 /**
- * 只做两件事，在 Instrumentation.execStartActivity（所有 startActivity 的底层汇聚点）
- * 静默取消跳转，调用方零感知、不抛异常、不闪退：
- *   1. App 跳浏览器打开网页（ACTION_VIEW + http/https）
- *   2. App 唤起安装（触发系统「打开方式选择」弹窗的 Intent）
+ * 全部为"参数替换"式静默拦截，不抛任何异常，调用方不会崩溃：
+ *   1. App 跳浏览器（ACTION_VIEW + http/https）→ Intent 换成打开桌面 Home
+ *   2. App 唤起安装/打开方式弹窗 → Intent 换成打开桌面 Home
+ *   3. DownloadManager.enqueue 下载 .apk → URL 换成无效地址
+ *   4. FileOutputStream 写 .apk 文件 → 路径换成 App cache 下的无害临时文件
+ *   5. SystemClock 开机时长 → 加固定随机偏移（每 App 每次开机固定，重启重随机）
  *
- * 下载、文件写入、网络请求等一律放行，不拦截。
+ * 网络请求、其他文件读写一律放行。
  */
 public class MainHook implements IXposedHookLoadPackage {
 
@@ -66,6 +68,7 @@ public class MainHook implements IXposedHookLoadPackage {
 
         // 2. 文件写入（不限目录，路径以危险后缀结尾即拦；换成 App 自己 cache 目录下的
         //    无害临时文件——该目录必然可写，构造不会抛 FileNotFoundException，不崩溃）
+        //    覆盖 File/String 两种构造重载（下载库两种都用）
         try {
             Class<?> fos = XposedHelpers.findClass("java.io.FileOutputStream", lp.classLoader);
             final String cacheDir = "/data/data/" + pkg + "/cache";
@@ -73,8 +76,9 @@ public class MainHook implements IXposedHookLoadPackage {
                 @Override
                 protected void beforeHookedMethod(MethodHookParam p) {
                     if (p.args.length < 1 || p.args[0] == null) return;
-                    String path = p.args[0] instanceof File
-                            ? ((File) p.args[0]).getPath() : p.args[0].toString();
+                    Object a0 = p.args[0];
+                    String path = a0 instanceof File
+                            ? ((File) a0).getPath() : a0.toString();
                     if (isHttpApkUrl(path)) {
                         LogUtil.log("BLOCK write " + path + " pkg=" + pkg);
                         p.args[0] = new File(cacheDir, ".blocked_" + System.nanoTime());
@@ -82,6 +86,8 @@ public class MainHook implements IXposedHookLoadPackage {
                 }
             };
             XposedHelpers.findAndHookConstructor(fos, File.class, boolean.class, pathHook);
+            XposedHelpers.findAndHookConstructor(fos, String.class, pathHook);
+            XposedHelpers.findAndHookConstructor(fos, String.class, boolean.class, pathHook);
         } catch (Throwable t) {
             LogUtil.log("FileOutputStream hook skipped: " + t.getMessage());
         }
@@ -275,9 +281,8 @@ public class MainHook implements IXposedHookLoadPackage {
         };
         try {
             // 拦 Instrumentation.execStartActivity：所有 startActivity 的底层汇聚点。
-            // 命中时返回 null（合法返回值，表示无结果），调用方零感知、不崩溃。
-            // 在这一层拦，系统不会再解析 Intent，也就不会出现
-            // 「about: 无组件可处理」导致的 ActivityNotFoundException 闪退。
+            // 命中时把 Intent 换成「打开桌面 Home」：组件必可解析、返回真实结果，
+            // 无 ActivityNotFoundException、无 NPE，调用方零崩溃。
             Class<?> instr = XposedHelpers.findClass("android.app.Instrumentation", lp.classLoader);
             for (java.lang.reflect.Method m : instr.getDeclaredMethods()) {
                 if (!"execStartActivity".equals(m.getName())) continue;
