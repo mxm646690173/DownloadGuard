@@ -1,0 +1,6 @@
+id=uptime_random_boot
+name=随机开机时间(每次开机)
+version=1.0
+versionCode=1
+author=Claude
+description=每次开机生成随机开机时间偏移(24-72h)写入系统属性,供LSPosed模块读取

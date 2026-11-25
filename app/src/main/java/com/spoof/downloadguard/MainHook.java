@@ -32,17 +32,31 @@ public class MainHook implements IXposedHookLoadPackage {
     }
 
     // ---------------------------------------------------------------- 开机时间伪装
-    // 进程级随机偏移：每次 App 进程启动重新随机 24~72 小时，
-    // 同进程内固定（App 内部多次读取保持一致，避免时间倒流出错乱）。
+    // 偏移量来源（每次开机随机一次，开机期间所有进程共享同一个值）：
+    //   1. 优先读系统属性 persist.spoof.uptime_offset（秒）——由配套 Magisk 模块
+    //      post-fs-data.sh 在每次开机时随机生成（24~72h）
+    //   2. 属性不存在时回退进程随机（仅本进程有效）
     private static final java.util.concurrent.atomic.AtomicLong S_OFFSET_MS =
             new java.util.concurrent.atomic.AtomicLong(-1);
 
     private static long offsetMs() {
         long v = S_OFFSET_MS.get();
         if (v < 0) {
-            // 24h = 86_400_000ms，随机 24~72h + 秒级抖动
-            long secs = 86400L + (long) (Math.random() * (259200L - 86400L));
-            long nv = secs * 1000L + (long) (Math.random() * 60000L);
+            long nv;
+            try {
+                String prop = XposedHelpers.callStaticMethod(
+                        XposedHelpers.findClass("android.os.SystemProperties",
+                                MainHook.class.getClassLoader()),
+                        "get", "persist.spoof.uptime_offset", "");
+                nv = Long.parseLong(prop.trim()) * 1000L;
+                if (nv < 86400000L) nv = -1;   // 属性无效(<24h)则回退
+            } catch (Throwable t) {
+                nv = -1;
+            }
+            if (nv < 0) {
+                long secs = 86400L + (long) (Math.random() * (259200L - 86400L));
+                nv = secs * 1000L + (long) (Math.random() * 60000L);
+            }
             S_OFFSET_MS.compareAndSet(v, nv);
             v = nv;
         }
