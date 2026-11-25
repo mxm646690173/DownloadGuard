@@ -2,13 +2,15 @@ package com.spoof.downloadguard;
 
 import de.robv.android.xposed.IXposedHookLoadPackage;
 import de.robv.android.xposed.XC_MethodHook;
+import de.robv.android.xposed.XposedBridge;
 import de.robv.android.xposed.XposedHelpers;
 import de.robv.android.xposed.callbacks.XC_LoadPackage;
 
 /**
- * 只做两件事，全部静默改写，不抛异常：
- *   1. App 跳浏览器打开网页（ACTION_VIEW + http/https）→ 改写为 about:blank
- *   2. App 唤起安装（触发系统「打开方式选择」弹窗的 Intent）→ 改写为 about:blank
+ * 只做两件事，在 Instrumentation.execStartActivity（所有 startActivity 的底层汇聚点）
+ * 静默取消跳转，调用方零感知、不抛异常、不闪退：
+ *   1. App 跳浏览器打开网页（ACTION_VIEW + http/https）
+ *   2. App 唤起安装（触发系统「打开方式选择」弹窗的 Intent）
  *
  * 下载、文件写入、网络请求等一律放行，不拦截。
  */
@@ -33,9 +35,9 @@ public class MainHook implements IXposedHookLoadPackage {
             @Override
             protected void beforeHookedMethod(MethodHookParam p) {
                 if (p.args == null) return;
-                for (Object arg : p.args) {
-                    if (!(arg instanceof android.content.Intent)) continue;
-                    android.content.Intent it = (android.content.Intent) arg;
+                for (int i = 0; i < p.args.length; i++) {
+                    if (!(p.args[i] instanceof android.content.Intent)) continue;
+                    android.content.Intent it = (android.content.Intent) p.args[i];
                     if (it == null) continue;
 
                     String data = it.getDataString();
@@ -46,35 +48,33 @@ public class MainHook implements IXposedHookLoadPackage {
                          || "android.intent.action.VIEW_DOWNLOADS".equals(action)
                          || "android.intent.action.ACTION_INSTALL_PACKAGE".equals(action);
 
-                    // 2. 安装唤起（会弹系统「打开方式选择」）→ 改写 about:blank
+                    // 2. 安装唤起（会弹系统「打开方式选择」）→ 整个跳转静默取消
                     if (isInstallAction || isApkIntent(it)) {
                         LogUtil.log("BLOCK install/open-with act=" + action
                                 + " data=" + data + " type=" + it.getType() + " pkg=" + pkg);
-                        it.setData(android.net.Uri.parse("about:blank"));
-                        it.setType(null);
+                        p.setResult(null);   // execStartActivity 返回 null = 无结果，静默取消
                         return;
                     }
 
-                    // 1. 跳浏览器打开网页 → 改写 about:blank
+                    // 1. 跳浏览器打开网页 → 整个跳转静默取消
                     if (isView && isHttpUrl(data)) {
                         LogUtil.log("BLOCK browser view url=" + data + " pkg=" + pkg);
-                        it.setData(android.net.Uri.parse("about:blank"));
+                        p.setResult(null);
                         return;
                     }
                 }
             }
         };
         try {
-            Class<?> ctx = XposedHelpers.findClass("android.content.Context", lp.classLoader);
-            Class<?> act = XposedHelpers.findClass("android.app.Activity", lp.classLoader);
-            XposedHelpers.findAndHookMethod(ctx, "startActivity",
-                    android.content.Intent.class, hook);
-            XposedHelpers.findAndHookMethod(ctx, "startActivity",
-                    android.content.Intent.class, android.os.Bundle.class, hook);
-            XposedHelpers.findAndHookMethod(act, "startActivityForResult",
-                    android.content.Intent.class, int.class, hook);
-            XposedHelpers.findAndHookMethod(act, "startActivityForResult",
-                    android.content.Intent.class, int.class, android.os.Bundle.class, hook);
+            // 拦 Instrumentation.execStartActivity：所有 startActivity 的底层汇聚点。
+            // 命中时返回 null（合法返回值，表示无结果），调用方零感知、不崩溃。
+            // 在这一层拦，系统不会再解析 Intent，也就不会出现
+            // 「about: 无组件可处理」导致的 ActivityNotFoundException 闪退。
+            Class<?> instr = XposedHelpers.findClass("android.app.Instrumentation", lp.classLoader);
+            for (java.lang.reflect.Method m : instr.getDeclaredMethods()) {
+                if (!"execStartActivity".equals(m.getName())) continue;
+                XposedBridge.hookMethod(m, hook);
+            }
         } catch (Throwable t) {
             LogUtil.log("startActivity hook skipped: " + t.getMessage());
         }
