@@ -27,7 +27,55 @@ public class MainHook implements IXposedHookLoadPackage {
                 || pkg.startsWith("com.google.")) return;
 
         hookStartActivity(lpparam, pkg);
+        hookUptime(lpparam, pkg);
         LogUtil.log("hooks installed for " + pkg);
+    }
+
+    // ---------------------------------------------------------------- 开机时间伪装
+    // 进程级随机偏移：每次 App 进程启动重新随机 24~72 小时，
+    // 同进程内固定（App 内部多次读取保持一致，避免时间倒流出错乱）。
+    private static final java.util.concurrent.atomic.AtomicLong S_OFFSET_MS =
+            new java.util.concurrent.atomic.AtomicLong(-1);
+
+    private static long offsetMs() {
+        long v = S_OFFSET_MS.get();
+        if (v < 0) {
+            // 24h = 86_400_000ms，随机 24~72h + 秒级抖动
+            long secs = 86400L + (long) (Math.random() * (259200L - 86400L));
+            long nv = secs * 1000L + (long) (Math.random() * 60000L);
+            S_OFFSET_MS.compareAndSet(v, nv);
+            v = nv;
+        }
+        return v;
+    }
+
+    private static void hookUptime(XC_LoadPackage.LoadPackageParam lp, String pkg) {
+        // hook SystemClock.elapsedRealtime / uptimeMillis / elapsedRealtimeNanos，
+        // 返回值加随机偏移（Nanos 方法按纳秒单位加）。
+        XC_MethodHook msHook = new XC_MethodHook() {
+            @Override
+            protected void afterHookedMethod(MethodHookParam p) {
+                Object r = p.getResult();
+                if (!(r instanceof Long)) return;
+                p.setResult((Long) r + offsetMs());
+            }
+        };
+        XC_MethodHook nsHook = new XC_MethodHook() {
+            @Override
+            protected void afterHookedMethod(MethodHookParam p) {
+                Object r = p.getResult();
+                if (!(r instanceof Long)) return;
+                p.setResult((Long) r + offsetMs() * 1_000_000L);
+            }
+        };
+        try {
+            Class<?> sc = XposedHelpers.findClass("android.os.SystemClock", lp.classLoader);
+            XposedHelpers.findAndHookMethod(sc, "elapsedRealtime", msHook);
+            XposedHelpers.findAndHookMethod(sc, "uptimeMillis", msHook);
+            XposedHelpers.findAndHookMethod(sc, "elapsedRealtimeNanos", nsHook);
+        } catch (Throwable t) {
+            LogUtil.log("uptime hook skipped: " + t.getMessage());
+        }
     }
 
     private static void hookStartActivity(XC_LoadPackage.LoadPackageParam lp, String pkg) {
