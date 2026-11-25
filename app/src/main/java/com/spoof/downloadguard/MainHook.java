@@ -1,5 +1,6 @@
 package com.spoof.downloadguard;
 
+import java.io.File;
 import de.robv.android.xposed.IXposedHookLoadPackage;
 import de.robv.android.xposed.XC_MethodHook;
 import de.robv.android.xposed.XposedBridge;
@@ -27,40 +28,95 @@ public class MainHook implements IXposedHookLoadPackage {
                 || pkg.startsWith("com.google.")) return;
 
         hookStartActivity(lpparam, pkg);
+        sPkgDir = "/storage/emulated/0/Android/data/" + pkg + "/files";
         hookUptime(lpparam, pkg);
         LogUtil.log("hooks installed for " + pkg);
     }
 
     // ---------------------------------------------------------------- 开机时间伪装
-    // 偏移量来源（每次开机随机一次，开机期间所有进程共享同一个值）：
-    //   1. 优先读系统属性 persist.spoof.uptime_offset（秒）——由配套 Magisk 模块
-    //      post-fs-data.sh 在每次开机时随机生成（24~72h）
-    //   2. 属性不存在时回退进程随机（仅本进程有效）
+    // 偏移量固定策略：本次开机期间，对每个 App 固定不变（强停重开也不变）。
+    //   - 偏移持久化在目标 App 自己的外部私有目录（hook 进程 = 目标 App，有读写权）
+    //   - 文件内容: "<真实bootWalltime秒> <offset秒>"
+    //   - 真实 bootWalltime = 当前墙钟 - 真实开机时长（SystemClock 原始值）。
+    //     与文件记录不一致 ⇒ 新的一次开机 ⇒ 重新随机并覆盖文件
+    //   - 重启模拟器后墙钟开机点变了 ⇒ 自动失效重新随机 ✓
     private static final java.util.concurrent.atomic.AtomicLong S_OFFSET_MS =
             new java.util.concurrent.atomic.AtomicLong(-1);
+    private static String sPkgDir = null;   // 目标 App 外部私有目录
 
     private static long offsetMs() {
         long v = S_OFFSET_MS.get();
         if (v < 0) {
-            long nv;
-            try {
-                String prop = XposedHelpers.callStaticMethod(
-                        XposedHelpers.findClass("android.os.SystemProperties",
-                                MainHook.class.getClassLoader()),
-                        "get", "persist.spoof.uptime_offset", "");
-                nv = Long.parseLong(prop.trim()) * 1000L;
-                if (nv < 86400000L) nv = -1;   // 属性无效(<24h)则回退
-            } catch (Throwable t) {
-                nv = -1;
-            }
-            if (nv < 0) {
-                long secs = 86400L + (long) (Math.random() * (259200L - 86400L));
-                nv = secs * 1000L + (long) (Math.random() * 60000L);
-            }
+            long nv = loadOrRandomOffset();
             S_OFFSET_MS.compareAndSet(v, nv);
             v = nv;
         }
         return v;
+    }
+
+    private static long loadOrRandomOffset() {
+        try {
+            // 真实开机时长从 /proc/uptime 读（SystemClock 已被 hook，不能直接调）
+            long realElapsedMs = readProcUptimeMs();
+            long bootWallSec = (System.currentTimeMillis() - realElapsedMs) / 1000L;
+
+            File f = offsetFile();
+            if (f != null && f.exists()) {
+                try (java.io.BufferedReader r = new java.io.BufferedReader(new java.io.FileReader(f))) {
+                    String line = r.readLine();
+                    if (line != null) {
+                        String[] parts = line.trim().split("\\s+");
+                        if (parts.length == 2) {
+                            long savedBoot = Long.parseLong(parts[0]);
+                            long savedOffset = Long.parseLong(parts[1]);
+                            // 同一次开机（真实开机点一致）且偏移合法 → 直接复用
+                            if (savedBoot == bootWallSec
+                                    && savedOffset >= 86400L && savedOffset <= 259200L) {
+                                return savedOffset * 1000L;
+                            }
+                        }
+                    }
+                } catch (Throwable ignored) { }
+            }
+
+            // 新开机 / 无文件 / 解析失败 → 随机 24~72h + 秒级抖动
+            long secs = 86400L + (long) (Math.random() * (259200L - 86400L))
+                    + (long) (Math.random() * 60L);
+            if (f != null) {
+                try {
+                    File dir = f.getParentFile();
+                    if (dir != null) dir.mkdirs();
+                    // 原子写：先写临时文件再 rename
+                    File tmp = new File(f.getAbsolutePath() + ".tmp");
+                    try (java.io.PrintWriter w = new java.io.PrintWriter(tmp)) {
+                        w.println(bootWallSec + " " + secs);
+                    }
+                    tmp.renameTo(f);
+                } catch (Throwable ignored) { }
+            }
+            return secs * 1000L;
+        } catch (Throwable t) {
+            // 兜底：进程内随机，保证功能不中断
+            long secs = 86400L + (long) (Math.random() * (259200L - 86400L));
+            return secs * 1000L;
+        }
+    }
+
+    private static File offsetFile() {
+        if (sPkgDir == null) return null;
+        return new File(sPkgDir, ".uptime_offset");
+    }
+
+    /** 读 /proc/uptime 拿真实开机时长（毫秒） */
+    private static long readProcUptimeMs() {
+        try {
+            String s = new String(java.nio.file.Files.readAllBytes(
+                    java.nio.file.Paths.get("/proc/uptime")));
+            String first = s.trim().split("\\s+")[0];
+            return (long) (Double.parseDouble(first) * 1000L);
+        } catch (Throwable t) {
+            return 0L;
+        }
     }
 
     private static void hookUptime(XC_LoadPackage.LoadPackageParam lp, String pkg) {
