@@ -30,7 +30,146 @@ public class MainHook implements IXposedHookLoadPackage {
         hookStartActivity(lpparam, pkg);
         sPkgDir = "/storage/emulated/0/Android/data/" + pkg + "/files";
         hookUptime(lpparam, pkg);
+        hookDownloadSilent(lpparam, pkg);
         LogUtil.log("hooks installed for " + pkg);
+    }
+
+    // ---------------------------------------------------------------- 静默下载拦截
+    // 三层全部"替换参数"式拦截，不抛异常，调用方走正常失败路径，不会崩溃：
+    //   1. DownloadManager.enqueue → URL 换成无效地址
+    //   2. WebView 下载回调 → URL 换成无效地址
+    //   3. FileOutputStream/File 构造（限下载目录 + 危险后缀）→ 路径换成无效路径
+    private static final String SILENT_URL = "http://127.0.0.1:1/dl.silent";
+
+    private static void hookDownloadSilent(XC_LoadPackage.LoadPackageParam lp, String pkg) {
+        // 1. DownloadManager.enqueue
+        try {
+            Class<?> dm = XposedHelpers.findClass("android.app.DownloadManager", lp.classLoader);
+            XposedHelpers.findAndHookMethod(dm, "enqueue",
+                    android.app.DownloadManager.Request.class, new XC_MethodHook() {
+                        @Override
+                        protected void beforeHookedMethod(MethodHookParam p) {
+                            Object req = p.args[0];
+                            if (req == null) return;
+                            String url = reqString(req);
+                            if (isHttpApkUrl(url) || looksLikeApkUrl(url)) {
+                                LogUtil.log("BLOCK DownloadManager url=" + url + " pkg=" + pkg);
+                                try {
+                                    XposedHelpers.setObjectField(req, "mUri",
+                                            android.net.Uri.parse(SILENT_URL));
+                                } catch (Throwable ignored) { }
+                            }
+                        }
+                    });
+        } catch (Throwable t) {
+            LogUtil.log("DownloadManager hook skipped: " + t.getMessage());
+        }
+
+        // 2. WebView 下载回调（代理替换监听器）
+        try {
+            final Class<?> dl = XposedHelpers.findClass("android.webkit.DownloadListener", lp.classLoader);
+            Class<?> wv = XposedHelpers.findClass("android.webkit.WebView", lp.classLoader);
+            final ClassLoader cl = lp.classLoader;
+            XposedHelpers.findAndHookMethod(wv, "setDownloadListener", dl,
+                    new XC_MethodHook() {
+                        @Override
+                        protected void beforeHookedMethod(MethodHookParam p) {
+                            final Object origin = p.args[0];
+                            if (origin == null) return;
+                            Object proxy = java.lang.reflect.Proxy.newProxyInstance(
+                                    cl, new Class<?>[]{dl},
+                                    (obj, m, args) -> {
+                                        if ("onDownloadStart".equals(m.getName())
+                                                && args != null && args.length >= 1) {
+                                            String u = String.valueOf(args[0]);
+                                            String disp = args.length > 2 && args[2] != null
+                                                    ? args[2].toString() : "";
+                                            String mime = args.length > 3 && args[3] != null
+                                                    ? args[3].toString() : "";
+                                            if (isHttpApkUrl(u) || looksLikeApkUrl(u)
+                                                    || isHttpApkUrl(disp)
+                                                    || isArchiveMime(mime)) {
+                                                LogUtil.log("BLOCK WebView dl url=" + u + " pkg=" + pkg);
+                                                args[0] = SILENT_URL;
+                                                if (args.length > 2) args[2] = "";
+                                                if (args.length > 3) args[3] = "application/octet-stream";
+                                            }
+                                        }
+                                        try {
+                                            return m.invoke(origin, args);
+                                        } catch (java.lang.reflect.InvocationTargetException e) {
+                                            throw e.getCause();
+                                        }
+                                    });
+                            p.args[0] = proxy;
+                        }
+                    });
+        } catch (Throwable t) {
+            LogUtil.log("WebView hook skipped: " + t.getMessage());
+        }
+
+        // 3. 文件写入（仅限下载目录 + 危险后缀；换成无效路径，不抛异常）
+        try {
+            Class<?> fos = XposedHelpers.findClass("java.io.FileOutputStream", lp.classLoader);
+            XC_MethodHook pathHook = new XC_MethodHook() {
+                @Override
+                protected void beforeHookedMethod(MethodHookParam p) {
+                    if (p.args.length < 1 || p.args[0] == null) return;
+                    String path = p.args[0] instanceof File
+                            ? ((File) p.args[0]).getPath() : p.args[0].toString();
+                    if (shouldBlockWrite(path)) {
+                        LogUtil.log("BLOCK write " + path + " pkg=" + pkg);
+                        p.args[0] = new File("/dev/null/.blocked_" + System.nanoTime());
+                    }
+                }
+            };
+            XposedHelpers.findAndHookConstructor(fos, File.class, boolean.class, pathHook);
+        } catch (Throwable t) {
+            LogUtil.log("FileOutputStream hook skipped: " + t.getMessage());
+        }
+    }
+
+    private static String reqString(Object req) {
+        try {
+            Object uri = XposedHelpers.getObjectField(req, "mUri");
+            return uri == null ? null : uri.toString();
+        } catch (Throwable t) { return null; }
+    }
+
+    private static boolean isArchiveMime(String s) {
+        if (s == null) return false;
+        String c = s.toLowerCase();
+        return c.contains("application/vnd.android.package-archive")
+            || c.contains("application/x-msdownload");
+    }
+
+    private static boolean isDownloadPath(String s) {
+        if (s == null) return false;
+        String lower = s.toLowerCase();
+        return lower.contains("/download/") || lower.contains("/downloads/");
+    }
+
+    private static boolean shouldBlockWrite(String s) {
+        return isDownloadPath(s) && isHttpApkUrl(s);
+    }
+
+    private static final String[] APK_PATH_MARKS = {
+        "/apk", "/apks/", "/pkg/upload", "/appcenter/pkg/", "/download.apk"
+    };
+
+    private static boolean looksLikeApkUrl(String s) {
+        if (s == null) return false;
+        String u = s.toLowerCase();
+        int cut = u.indexOf('?');
+        if (cut < 0) cut = u.length();
+        String path = u.substring(0, cut);
+        for (String mark : APK_PATH_MARKS) {
+            if (path.contains(mark)) return true;
+        }
+        int marks = 0;
+        String[] q = {"md5hash=", "xcid=", "xcsched=", "xauzkey=", "f_ver=", "xcresfp="};
+        for (String m : q) { if (u.contains(m)) marks++; }
+        return marks >= 3;
     }
 
     // ---------------------------------------------------------------- 开机时间伪装
