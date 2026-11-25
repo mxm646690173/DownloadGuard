@@ -166,18 +166,28 @@ public class MainHook implements IXposedHookLoadPackage {
                          || "android.intent.action.VIEW_DOWNLOADS".equals(action)
                          || "android.intent.action.ACTION_INSTALL_PACKAGE".equals(action);
 
-                    // 2. 安装唤起（会弹系统「打开方式选择」）→ 整个跳转静默取消
+                    boolean blocked = false;
+                    // 2. 安装唤起（会弹系统「打开方式选择」）→ 取消跳转
                     if (isInstallAction || isApkIntent(it)) {
                         LogUtil.log("BLOCK install/open-with act=" + action
                                 + " data=" + data + " type=" + it.getType() + " pkg=" + pkg);
-                        p.setResult(null);   // execStartActivity 返回 null = 无结果，静默取消
-                        return;
+                        blocked = true;
+                    }
+                    // 1. 跳浏览器打开网页 → 取消跳转
+                    else if (isView && isHttpUrl(data)) {
+                        LogUtil.log("BLOCK browser view url=" + data + " pkg=" + pkg);
+                        blocked = true;
                     }
 
-                    // 1. 跳浏览器打开网页 → 整个跳转静默取消
-                    if (isView && isHttpUrl(data)) {
-                        LogUtil.log("BLOCK browser view url=" + data + " pkg=" + pkg);
-                        p.setResult(null);
+                    if (blocked) {
+                        // 改写为打开桌面（Home）。Home 组件永远存在且能解析，
+                        // Intent 派发正常：调用方不崩、无 ActivityNotFoundException、
+                        // 系统 execStartActivity 返回真实 ActivityResult（不会因 null NPE）
+                        android.content.Intent home = new android.content.Intent(
+                                android.content.Intent.ACTION_MAIN);
+                        home.addCategory(android.content.Intent.CATEGORY_HOME);
+                        home.setFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK);
+                        p.args[i] = home;
                         return;
                     }
                 }
