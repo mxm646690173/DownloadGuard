@@ -134,16 +134,24 @@ public class MainHook implements IXposedHookLoadPackage {
         long v = S_OFFSET_MS.get();
         if (v < 0) {
             long nv = loadOrRandomOffset();
-            S_OFFSET_MS.compareAndSet(v, nv);
-            v = nv;
+            // CAS 失败说明别的线程已先写入——直接采用它的值，
+            // 不再写文件，避免「内存 A / 文件 B」不一致导致强停重开后偏移漂移
+            if (S_OFFSET_MS.compareAndSet(v, nv)) {
+                return nv;
+            }
+            return S_OFFSET_MS.get();
         }
         return v;
     }
 
     private static long loadOrRandomOffset() {
+        // 真实开机时长从 /proc/uptime 读（SystemClock 已被 hook，不能直接调）。
+        // 读失败时锚点不可靠——直接兜底随机，不读写文件（避免失真锚点污染固定性）
+        long realElapsedMs = readProcUptimeMs();
+        if (realElapsedMs <= 0L) {
+            return (86400L + (long) (Math.random() * (259200L - 86400L))) * 1000L;
+        }
         try {
-            // 真实开机时长从 /proc/uptime 读（SystemClock 已被 hook，不能直接调）
-            long realElapsedMs = readProcUptimeMs();
             long bootWallSec = (System.currentTimeMillis() - realElapsedMs) / 1000L;
 
             File f = offsetFile();
