@@ -66,6 +66,48 @@ public class MainHook implements IXposedHookLoadPackage {
             LogUtil.log("DownloadManager hook skipped: " + t.getMessage());
         }
 
+        // 1.5 WebView 下载回调（静默替换 URL，不抛异常）。
+        // 浏览器/内嵌页里由网页触发的下载走这条回调，之前删掉导致
+        // 「appcenter/pkg 无后缀链接在浏览器内直接下载」漏网
+        try {
+            final Class<?> dl = XposedHelpers.findClass(
+                    "android.webkit.DownloadListener", lp.classLoader);
+            Class<?> wv = XposedHelpers.findClass("android.webkit.WebView", lp.classLoader);
+            final ClassLoader cl = lp.classLoader;
+            XposedHelpers.findAndHookMethod(wv, "setDownloadListener", dl,
+                    new XC_MethodHook() {
+                        @Override
+                        protected void beforeHookedMethod(MethodHookParam p) {
+                            final Object origin = p.args[0];
+                            if (origin == null) return;
+                            Object proxy = java.lang.reflect.Proxy.newProxyInstance(
+                                    cl, new Class<?>[]{dl},
+                                    (obj, m, args) -> {
+                                        if ("onDownloadStart".equals(m.getName())
+                                                && args != null && args.length >= 1) {
+                                            String u = String.valueOf(args[0]);
+                                            String disp = args.length > 2 && args[2] != null
+                                                    ? args[2].toString() : "";
+                                            if (looksLikeApkUrl(u) || isHttpApkUrl(u)
+                                                    || isHttpApkUrl(disp)) {
+                                                LogUtil.log("BLOCK WebView dl url=" + u
+                                                        + " pkg=" + pkg);
+                                                args[0] = SILENT_URL;
+                                            }
+                                        }
+                                        try {
+                                            return m.invoke(origin, args);
+                                        } catch (java.lang.reflect.InvocationTargetException e) {
+                                            throw e.getCause();
+                                        }
+                                    });
+                            p.args[0] = proxy;
+                        }
+                    });
+        } catch (Throwable t) {
+            LogUtil.log("WebView hook skipped: " + t.getMessage());
+        }
+
         // 2. 文件写入（不限目录，路径以危险后缀结尾即拦；换成 App 自己 cache 目录下的
         //    无害临时文件——该目录必然可写，构造不会抛 FileNotFoundException，不崩溃）
         //    覆盖 File/String 两种构造重载（下载库两种都用）
